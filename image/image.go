@@ -12,21 +12,63 @@ import (
 	"github.com/notnil/chess/image/internal"
 )
 
+type Format interface {
+	Init() error
+	DrawSquare(xIdx, yIdx int, col color.Color) error
+	DrawPiece(xIdx, yIdx int, piece chess.Piece) error
+}
+
+type svgFormat struct {
+	canvas            *svg.SVG
+	sqWidth, sqHeight int
+	width, height     int
+}
+
+func (s *svgFormat) Init() error {
+	s.canvas.Start(s.width, s.height)
+	s.canvas.Rect(0, 0, s.width, s.height)
+}
+
+func (s *svgFormat) DrawSquare(xIdx, yIdx int, col color.Color) error {
+	canvas.Rect(x, y, sqWidth, sqHeight, "fill: "+colorToHex(c))
+}
+
+func (s *svgFormat) DrawPiece(xIdx, yIdx int, piece chess.Piece) error {
+
+}
+
+type Option func(*config, *encoder)
+
 // SVG writes the board SVG representation into the writer.
 // An error is returned if there is there is an error writing data.
 // SVG also takes options which can customize the image output.
-func SVG(w io.Writer, b *chess.Board, opts ...func(*encoder)) error {
-	e := new(w, opts)
-	return e.EncodeSVG(b)
+func SVG(w io.Writer, b *chess.Board, opts ...Option) error {
+	e := new(opts)
+	boardWidth, boardHeight := e.boardSize()
+	return e.Encode(b, &svgFormat{
+		canvas:   svg.New(w),
+		sqWidth:  e.cfg.sqWidth,
+		sqHeight: e.cfg.sqHeight,
+		width:    boardWidth,
+		height:   boardHeight,
+	})
+}
+
+// Flip rotates the board 180 degrees, placing the player in black at the
+// bottom.
+func Flip() Option {
+	return func(cfg *config, _ *encoder) {
+		cfg.flip = true
+	}
 }
 
 // SquareColors is designed to be used as an optional argument
 // to the SVG function.  It changes the default light and
 // dark square colors to the colors given.
-func SquareColors(light, dark color.Color) func(*encoder) {
-	return func(e *encoder) {
-		e.light = light
-		e.dark = dark
+func SquareColors(light, dark color.Color) Option {
+	return func(cfg *config, _ *encoder) {
+		cfg.light = light
+		cfg.dark = dark
 	}
 }
 
@@ -34,44 +76,58 @@ func SquareColors(light, dark color.Color) func(*encoder) {
 // to the SVG function.  It marks the given squares with the
 // color.  A possible usage includes marking squares of the
 // previous move.
-func MarkSquares(c color.Color, sqs ...chess.Square) func(*encoder) {
-	return func(e *encoder) {
+func MarkSquares(c color.Color, sqs ...chess.Square) Option {
+	return func(_ *config, e *encoder) {
 		for _, sq := range sqs {
 			e.marks[sq] = c
 		}
 	}
 }
 
-// A Encoder encodes chess boards into images.
+// config encompasses static parameters about how the board should be rendered.
+type config struct {
+	sqWidth  int
+	sqHeight int
+	flip     bool
+	light    color.Color
+	dark     color.Color
+}
+
+// encoder encodes chess boards into images.
 type encoder struct {
-	w     io.Writer
-	light color.Color
-	dark  color.Color
 	marks map[chess.Square]color.Color
+	cfg   *config
+}
+
+func (e *encoder) boardSize() (int, int) {
+	return e.cfg.sqWidth * 8, e.cfg.sqHeight * 8
 }
 
 // New returns an encoder that writes to the given writer.
 // New also takes options which can customize the image
 // output.
-func new(w io.Writer, options []func(*encoder)) *encoder {
+func new(options []Option) *encoder {
+	cfg := &config{
+		sqWidth:  45,
+		sqHeight: 45,
+		flip:     false,
+		light:    color.RGBA{235, 209, 166, 1},
+		dark:     color.RGBA{165, 117, 81, 1},
+	}
+
+	for _, op := range options {
+		op(cfg, &encoder{})
+	}
+
 	e := &encoder{
-		w:     w,
-		light: color.RGBA{235, 209, 166, 1},
-		dark:  color.RGBA{165, 117, 81, 1},
 		marks: map[chess.Square]color.Color{},
 	}
+
 	for _, op := range options {
-		op(e)
+		op(cfg, e)
 	}
 	return e
 }
-
-const (
-	sqWidth     = 45
-	sqHeight    = 45
-	boardWidth  = 8 * sqWidth
-	boardHeight = 8 * sqHeight
-)
 
 var (
 	orderOfRanks = []chess.Rank{chess.Rank8, chess.Rank7, chess.Rank6, chess.Rank5, chess.Rank4, chess.Rank3, chess.Rank2, chess.Rank1}
@@ -81,18 +137,21 @@ var (
 // EncodeSVG writes the board SVG representation into
 // the Encoder's writer.  An error is returned if there
 // is there is an error writing data.
-func (e *encoder) EncodeSVG(b *chess.Board) error {
+func (e *encoder) Encode(b *chess.Board, f Format) error {
+	boardWidth, boardHeight := e.boardSize()
+
 	boardMap := b.SquareMap()
-	canvas := svg.New(e.w)
-	canvas.Start(boardWidth, boardHeight)
-	canvas.Rect(0, 0, boardWidth, boardHeight)
+
+	if err := f.Init(); err != nil {
+		fmt.Errorf("failed to init output formatter: %w", err)
+	}
 
 	for i := 0; i < 64; i++ {
 		sq := chess.Square(i)
 		x, y := xyForSquare(sq)
 		// draw square
 		c := e.colorForSquare(sq)
-		canvas.Rect(x, y, sqWidth, sqHeight, "fill: "+colorToHex(c))
+		f.DrawSquare(x, y, c)
 		markColor, ok := e.marks[sq]
 		if ok {
 			canvas.Rect(x, y, sqWidth, sqHeight, "fill-opacity:0.2;fill: "+colorToHex(markColor))
@@ -140,7 +199,7 @@ func (e *encoder) colorForText(sq chess.Square) color.Color {
 func xyForSquare(sq chess.Square) (x, y int) {
 	fileIndex := int(sq.File())
 	rankIndex := 7 - int(sq.Rank())
-	return fileIndex * sqWidth, rankIndex * sqHeight
+	return fileIndex, rankIndex
 }
 
 func colorToHex(c color.Color) string {
